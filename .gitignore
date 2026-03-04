@@ -1,0 +1,5 @@
+.env
+mlopsV/
+__pycache__/
+*.pyc
+.vscode/
