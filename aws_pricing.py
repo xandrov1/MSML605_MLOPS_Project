@@ -1,3 +1,5 @@
+# Connect to AWS and get EC2 instances data
+
 import boto3
 import json
 from dotenv import load_dotenv
@@ -109,53 +111,3 @@ def get_instance_price(
                     if float(usd) > 0:
                         return {'price': float(usd), 'timestamp': None}
     return None
-
-    # Response's JSON structure for reference:
-    # {
-    #     "product": {
-    #         "instanceType": "g5.4xlarge",
-    #         "operatingSystem": "Linux",
-    #         ...
-    #     },
-    #     "terms": {
-    #         "OnDemand": {
-    #             "RANDOMKEYID123": {
-    #                 "priceDimensions": {
-    #                     "ANOTHERRANDOMKEY": {
-    #                         "pricePerUnit": {
-    #                             "USD": "1.6240000000"
-    #                         },
-    #                         "description": "per On Demand Linux g5.4xlarge Instance Hour",
-    #                         "unit": "Hrs"
-    #                     }
-    #                 }
-    #             }
-    #         },
-    #         "Reserved": {
-    #         ...
-    #         }
-    #     }
-    # }
-
-if __name__ == "__main__":
-
-    instances = get_ec2_instances(instance_families=['g5'])
-    for i in instances:
-        
-        # Instance stats
-        print(f"\n  {i['instance_type']}")
-        print(f"    vCPUs: {i['vcpus']}")
-        print(f"    Memory: {i['memory_mb']}MB")
-        print(f"    GPU: {i['gpu']}")
-        
-        # Instance Pricing 
-        ondemand = get_instance_price(i['instance_type'], pricing_model='OnDemand')
-        spot = get_instance_price(i['instance_type'], pricing_model='Spot')
-        reserved = get_instance_price(i['instance_type'], pricing_model='Reserved')
-        
-        print(f"    On-Demand Price/hr: ${ondemand['price']}")
-        print(f"    Spot Price/hr: ${spot['price']} (as of {spot['timestamp']})")
-        if reserved:
-            print(f"    Reserved Price/hr: ${reserved['price']} ({reserved['term']}, {reserved['payment']})")
-        else:
-            print(f"    Reserved Price/hr: unavailable")

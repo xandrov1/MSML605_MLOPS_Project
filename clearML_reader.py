@@ -14,25 +14,23 @@ load_dotenv() # Check .env for clearml credentials
 def get_task_data(project_name, task_name): # Gets clearML task info
     task = Task.get_task(project_name=project_name, task_name=task_name)
     
-    # Basic info
-    print("Task ID:", task.id)
-    print("Task name:", task.name)
-    print("Status:", task.status)
-    
-    # Hyperparameters
-    print("\nHyperparameters:")
-    params = task.get_parameters()
-    for k, v in params.items():
-        print(f"  {k}: {v}")
-    
-    # Metrics
-    print("\nMetrics:")
     metrics = task.get_last_scalar_metrics()
+    
+    # Separate machine metrics from model metrics
+    machine_metrics = {}
+    model_metrics = {}
     for metric, variants in metrics.items():
         for variant, values in variants.items():
-            print(f"  {metric}/{variant}: {values['last']}")
+            if ':monitor:machine' in metric:
+                machine_metrics[f"{metric}/{variant}"] = values['last']
+            else:
+                model_metrics[f"{metric}/{variant}"] = values['last']
     
-    return task
-
-if __name__ == "__main__":
-    get_task_data("605_HW2", "FashionMNIST_CNN_training")
+    return {
+        'id': task.id,
+        'name': task.name,
+        'status': task.status,
+        'hyperparameters': task.get_parameters(),
+        'model_metrics': model_metrics,
+        'machine_metrics': machine_metrics
+    }
