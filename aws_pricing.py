@@ -43,7 +43,7 @@ def get_instance_price(
     reserved_term='1yr',
     reserved_payment='No Upfront'
 ): # Gets price per hour of each instance. Needs "AWSPriceListServiceFullAccess" policy on IAM group
-    if pricing_model == 'Spot':
+    if pricing_model == 'spot':
         ec2 = boto3.client('ec2', region_name=region)
         response = ec2.describe_spot_price_history(
             InstanceTypes=[instance_type],
@@ -58,7 +58,7 @@ def get_instance_price(
             }
         return None
 
-    elif pricing_model == 'Reserved':
+    elif pricing_model == 'reserved':
         pricing = boto3.client('pricing', region_name='us-east-1')
         response = pricing.get_products(
             ServiceCode='AmazonEC2',
