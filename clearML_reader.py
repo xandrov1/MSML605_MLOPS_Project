@@ -13,6 +13,8 @@ load_dotenv() # Check .env for clearml credentials
 
 def get_task_data(project_name, task_name): # Gets clearML task info
     task = Task.get_task(project_name=project_name, task_name=task_name)
+    if task is None:
+        raise ValueError(f"Task '{task_name}' not found in project '{project_name}'")
     
     metrics = task.get_last_scalar_metrics()
     

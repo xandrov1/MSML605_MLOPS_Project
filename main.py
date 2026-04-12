@@ -1,4 +1,4 @@
-#  MiniSHELL for the whole app, gets info through clearML_reader and aws_pricing
+#  CLI for the whole app, gets info through clearML_reader and aws_pricing
 import click
 import shlex
 from clearml_reader import get_task_data
@@ -9,36 +9,58 @@ import re
 
 load_dotenv()
 
-VALID_PRICING_MODELS = ['ondemand', 'spot', 'reserved']
+VALID_PRICING_MODELS = ['ondemand', 'spot']
 VALID_REGION_FORMAT = r'^[a-z]+-[a-z]+-[0-9]+$'
 
 
-def parse_analyze_args(tokens):
-    args = {
+def get_token_value(tokens, i, flag): # Helper for input sanitisation, bounds check for input string
+    if i+1 >= len(tokens):
+        click.echo(f"  Missing value for {flag}")
+        return None
+    return tokens[i+1].strip()
+
+def parse_analyze_args(tokens): # Reads and maps tokens in the args dictionary
+
+    args = { # Dictionary 
         'project': None,
         'task': None,
         'instance_family': [],
-        'region': os.getenv('AWS_DEFAULT_REGION', 'us-east-1'),
-        'pricing_model': 'OnDemand'
+        'region': os.getenv('AWS_DEFAULT_REGION', None),
+        'pricing_model': 'ondemand'
     }
     
     i = 0
-    while i < len(tokens):
+    while i < len(tokens): # Iterate through each token (value of each flag which can become a possible arg)
         token = tokens[i]
         if token == '--project':
-            args['project'] = tokens[i+1].strip()
-            i += 2
+            value = get_token_value(tokens, i, token) # Bounds check 
+            if value is None: # Check the value isn't none
+                return None
+            args['project'] = value
+            i += 2 # Increment by two cause flag + value
         elif token == '--task':
-            args['task'] = tokens[i+1].strip()
+            value = get_token_value(tokens, i, token)
+            if value is None:
+                return None
+            args['task'] = value
             i += 2
         elif token == '--instance-family':
-            args['instance_family'].append(tokens[i+1].lower().strip())
+            value = get_token_value(tokens, i, token)
+            if value is None:
+                return None
+            args['instance_family'].append(value.lower()) # Append value after converting to lower so it can match any input (E.g. OnDeMaNd becomes ondemand)
             i += 2
         elif token == '--region':
-            args['region'] = tokens[i+1].strip()
+            value = get_token_value(tokens, i, token)
+            if value is None:
+                return None
+            args['region'] = value
             i += 2
         elif token == '--pricing-model':
-            args['pricing_model'] = tokens[i+1].lower().strip()
+            value = get_token_value(tokens, i, token)
+            if value is None:
+                return None
+            args['pricing_model'] = value.lower()
             i += 2
         else:
             click.echo(f"  Unknown option: '{token}'")
@@ -46,9 +68,11 @@ def parse_analyze_args(tokens):
     
     return args
 
-def validate_analyze_args(args):
-    errors = []
+def validate_analyze_args(args): # Checks args are actually valid (missing required fields, invalid region format, invalid pricing model)
+
+    errors = [] # Errors list
     
+    # Find errors and append them to list
     if not args['project']:
         errors.append("  Missing --project")
     
@@ -61,33 +85,20 @@ def validate_analyze_args(args):
     if args['pricing_model'] not in VALID_PRICING_MODELS:
         errors.append(f"  Invalid --pricing-model '{args['pricing_model']}'. Choose from: {', '.join(VALID_PRICING_MODELS)}")
     
-    if not re.match(VALID_REGION_FORMAT, args['region']):
+    if args['region'] and not re.match(VALID_REGION_FORMAT, args['region']):
         errors.append(f"  Invalid --region format '{args['region']}'. Expected format: us-east-1")
     
     if errors:
         click.echo("\nErrors:")
         for e in errors:
-            click.echo(e)
+            click.echo(e) # Print all errors
         return False
     
     return True
 
-def run_analyze(tokens):
-    args = parse_analyze_args(tokens)
-    if args is None:
-        return
-    
-    if not validate_analyze_args(args):
-        return
-    
-    # Getting ClearML data
-    click.echo(f"\nFetching ClearML experiment: {args['task']}...")
-    try:
-        task_data = get_task_data(args['project'], args['task'])
-    except Exception as e:
-        click.echo(f"  ClearML error: {e}")
-        return
-    
+def print_results(task_data, pricing_model, instance_prices): # Helper to print all results fetched from API calls
+
+    # ClearML data
     click.echo(f"\n--- Experiment Summary ---")
     click.echo(f"  Name:   {task_data['name']}")
     click.echo(f"  ID:     {task_data['id']}")
@@ -106,26 +117,54 @@ def run_analyze(tokens):
         clean_key = k.replace(':monitor:machine/', '').replace(':monitor:machine', '')
         click.echo(f"  {clean_key}: {v}")
 
+    # AWS data
+    click.echo(f"\n--- Available Instances ({pricing_model} pricing) ---")
+    for instance, price in instance_prices:
+        if price:
+            click.echo(f"  {instance['instance_type']} - ${price['price']}/hr | vCPUs: {instance['vcpus']} | Memory: {instance['memory_mb']}MB | GPU: {instance['gpu']}")
+
+def run_analyze(tokens):
+    args = parse_analyze_args(tokens)
+
+    if args is None: # Check args arent empty
+        return
+    
+    if not validate_analyze_args(args): # Check args aren't invalid
+        return
+    
+    if args['pricing_model'] == 'spot': # Spot pricing not available yet
+        click.echo("\n  [!] Spot pricing is not yet available. Please re-run with --pricing-model ondemand.")
+        return
+    
+    # Getting ClearML data 
+    click.echo(f"\nFetching ClearML experiment: {args['task']}...")
+    try:
+        task_data = get_task_data(args['project'], args['task']) # ClearML API call; from clearml_reader
+    except Exception as e:
+        click.echo(f"  ClearML error: {e}")
+        return
+
     # Getting AWS data
     click.echo(f"\nFetching AWS instances...")
     try:
-        instances = get_ec2_instances(instance_families=args['instance_family'])
+        instances = get_ec2_instances(instance_families=args['instance_family'], region=args['region']) # AWS API call from aws_pricing
     except Exception as e:
         click.echo(f"  AWS error: {e}")
         return
     
-    if not instances:
+    if not instances: # Instance family not found error
         click.echo(f"  No instances found for families: {args['instance_family']}")
         return
 
-    click.echo(f"\n--- Available Instances ({args['pricing_model']} pricing) ---")
-    for i in instances:
+    instance_prices = [] # Instance prices
+    for instance in instances:
         try:
-            price = get_instance_price(i['instance_type'], region=args['region'], pricing_model=args['pricing_model'])
-            if price:
-                click.echo(f"  {i['instance_type']} - ${price['price']}/hr | vCPUs: {i['vcpus']} | Memory: {i['memory_mb']}MB | GPU: {i['gpu']}")
+            price = get_instance_price(instance['instance_type'], region=args['region'], pricing_model=args['pricing_model']) # AWS API call from aws_pricing (uses different API than earlier one)
+            instance_prices.append((instance, price))
         except Exception as e:
-            click.echo(f"  Could not fetch price for {i['instance_type']}: {e}")
+            click.echo(f"  Could not fetch price for {instance['instance_type']}: {e}")
+
+    print_results(task_data, args['pricing_model'], instance_prices)
 
 def shell():
     click.echo("ML Cost-Performance Tool")
@@ -144,7 +183,7 @@ def shell():
             
             if user_input.lower() == 'help':
                 click.echo("\nAvailable commands:")
-                click.echo("  analyze --project <name> --task <name> --instance-family <family> [--region <region>] [--pricing-model <OnDemand|Spot|Reserved>]")
+                click.echo("  analyze --project <name> --task <name> --instance-family <family> [--region <region>] [--pricing-model <ondemand|spot>]")
                 click.echo("  quit -- exit the tool\n")
                 continue
             

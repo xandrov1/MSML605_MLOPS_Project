@@ -7,8 +7,8 @@ import os
 
 load_dotenv()
 
-def get_ec2_instances(instance_families=None): # Gets EC2's instances info. Needs "AmazonEC2FullAccess" policy on IAM group
-    ec2 = boto3.client('ec2', region_name=os.getenv('AWS_DEFAULT_REGION'))
+def get_ec2_instances(instance_families=None, region=None): # Gets EC2's instances info. Needs "AmazonEC2FullAccess" policy on IAM group
+    ec2 = boto3.client('ec2', region_name=region or os.getenv('AWS_DEFAULT_REGION'))
     
     filters = []
     if instance_families:
@@ -34,80 +34,50 @@ def get_ec2_instances(instance_families=None): # Gets EC2's instances info. Need
 
 def get_instance_price( 
     instance_type, 
-    region='us-east-1', 
-    os='Linux', 
+    region='us-east-1', #  Gets overridden if the user passes a different region from main.py
+    operatingSystem='Linux', 
     tenancy='Shared', 
-    pricing_model='OnDemand',
+    pricing_model=None,
     capacity_status='Used',
     preinstalled_sw='NA',
-    reserved_term='1yr',
-    reserved_payment='No Upfront'
 ): # Gets price per hour of each instance. Needs "AWSPriceListServiceFullAccess" policy on IAM group
-    if pricing_model == 'spot':
-        ec2 = boto3.client('ec2', region_name=region)
-        response = ec2.describe_spot_price_history(
-            InstanceTypes=[instance_type],
-            ProductDescriptions=['Linux/UNIX'],
-            MaxResults=1
-        )
-        if response['SpotPriceHistory']:
-            spot = response['SpotPriceHistory'][0]
-            return {
-                'price': float(spot['SpotPrice']),
-                'timestamp': spot['Timestamp'].strftime('%Y-%m-%d %H:%M:%S')
-            }
-        return None
+    
+    # --- SPOT: disabled, implementation preserved for possible future use ---
+    # if pricing_model == 'spot':
+    #     ec2 = boto3.client('ec2', region_name=region)
+    #     response = ec2.describe_spot_price_history(
+    #         InstanceTypes=[instance_type],
+    #         ProductDescriptions=['Linux/UNIX'],
+    #         MaxResults=1
+    #     )
+    #     if response['SpotPriceHistory']:
+    #         spot = response['SpotPriceHistory'][0]
+    #         return {
+    #             'price': float(spot['SpotPrice']),
+    #             'timestamp': spot['Timestamp'].strftime('%Y-%m-%d %H:%M:%S')
+    #         }
+    #     return None
+    # --------------------------------------------------------------
 
-    elif pricing_model == 'reserved':
-        pricing = boto3.client('pricing', region_name='us-east-1')
-        response = pricing.get_products(
-            ServiceCode='AmazonEC2',
-            Filters=[
-                {'Type': 'TERM_MATCH', 'Field': 'instanceType', 'Value': instance_type},
-                {'Type': 'TERM_MATCH', 'Field': 'regionCode', 'Value': region},
-                {'Type': 'TERM_MATCH', 'Field': 'operatingSystem', 'Value': os},
-                {'Type': 'TERM_MATCH', 'Field': 'tenancy', 'Value': tenancy},
-                {'Type': 'TERM_MATCH', 'Field': 'capacitystatus', 'Value': capacity_status},
-                {'Type': 'TERM_MATCH', 'Field': 'preInstalledSw', 'Value': preinstalled_sw},
-            ]
-        )
-        for price in response['PriceList']:
-            price_data = json.loads(price)
-            terms = price_data.get('terms', {}).get('Reserved', {})
-            for term in terms.values():
-                term_attrs = term.get('termAttributes', {})
-                if (term_attrs.get('LeaseContractLength') == reserved_term and 
-                    term_attrs.get('PurchaseOption') == reserved_payment):
-                    for dimension in term['priceDimensions'].values():
-                        usd = dimension['pricePerUnit'].get('USD', '0')
-                        if float(usd) > 0:
-                            return {
-                                'price': float(usd),
-                                'timestamp': None,
-                                'term': reserved_term,
-                                'payment': reserved_payment
-                            }
-        return None
-
-    else:  # OnDemand
-        pricing = boto3.client('pricing', region_name='us-east-1')
-        response = pricing.get_products(
-            ServiceCode='AmazonEC2',
-            Filters=[
-                {'Type': 'TERM_MATCH', 'Field': 'instanceType', 'Value': instance_type},
-                {'Type': 'TERM_MATCH', 'Field': 'regionCode', 'Value': region},
-                {'Type': 'TERM_MATCH', 'Field': 'operatingSystem', 'Value': os},
-                {'Type': 'TERM_MATCH', 'Field': 'tenancy', 'Value': tenancy},
-                {'Type': 'TERM_MATCH', 'Field': 'capacitystatus', 'Value': capacity_status},
-                {'Type': 'TERM_MATCH', 'Field': 'preInstalledSw', 'Value': preinstalled_sw},
-            ]
-        )
-        for price in response['PriceList']:
-            price_data = json.loads(price)
-            terms = price_data.get('terms', {}).get('OnDemand', {})
-            for term in terms.values():
-                for dimension in term['priceDimensions'].values():
-                    usd = dimension['pricePerUnit'].get('USD', '0')
-                    if float(usd) > 0:
-                        return {'price': float(usd), 'timestamp': None}
+    # OnDemand
+    pricing = boto3.client('pricing', region_name='us-east-1') # region_name is where to connect to the API. Never changes regardless of user input, because of the two-region limitation
+    response = pricing.get_products(
+        ServiceCode='AmazonEC2',
+        Filters=[
+            {'Type': 'TERM_MATCH', 'Field': 'instanceType', 'Value': instance_type},
+            {'Type': 'TERM_MATCH', 'Field': 'regionCode', 'Value': region}, # Region here is which region's prices to return
+            {'Type': 'TERM_MATCH', 'Field': 'operatingSystem', 'Value': operatingSystem},
+            {'Type': 'TERM_MATCH', 'Field': 'tenancy', 'Value': tenancy},
+            {'Type': 'TERM_MATCH', 'Field': 'capacitystatus', 'Value': capacity_status},
+            {'Type': 'TERM_MATCH', 'Field': 'preInstalledSw', 'Value': preinstalled_sw},
+        ]
+    )
+    for price in response['PriceList']:
+        price_data = json.loads(price)
+        terms = price_data.get('terms', {}).get('OnDemand', {})
+        for term in terms.values():
+            for dimension in term['priceDimensions'].values():
+                usd = dimension['pricePerUnit'].get('USD', '0')
+                if float(usd) > 0:
+                    return {'price': float(usd), 'timestamp': None}
     return None
