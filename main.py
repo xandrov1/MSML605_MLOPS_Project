@@ -6,6 +6,7 @@ from aws_pricing import get_ec2_instances, get_instance_price
 from dotenv import load_dotenv
 import os
 import re
+import copy
 
 load_dotenv()
 
@@ -19,79 +20,56 @@ def get_token_value(tokens, i, flag): # Helper for input sanitisation, bounds ch
         return None
     return tokens[i+1].strip()
 
-def parse_analyze_args(tokens): # Reads and maps tokens in the args dictionary
+FLAG_MAP = {
+    '--project': 'project',
+    '--task': 'task',
+    '--instance-family': 'instance_family',
+    '--instance-type': 'instance_type',
+    '--region': 'region',
+    '--pricing-model': 'pricing_model',
+}
 
-    args = { # Dictionary 
-        'project': None,
-        'task': None,
-        'instance_family': [],
-        'region': os.getenv('AWS_DEFAULT_REGION', None),
-        'pricing_model': 'ondemand'
-    }
+def parse_args(tokens, defaults):
+    args = copy.deepcopy(defaults)  # Copy defaults so we don't mutate the original
     
     i = 0
-    while i < len(tokens): # Iterate through each token (value of each flag which can become a possible arg)
+    while i < len(tokens):
         token = tokens[i]
-        if token == '--project':
-            value = get_token_value(tokens, i, token) # Bounds check 
-            if value is None: # Check the value isn't none
-                return None
-            args['project'] = value
-            i += 2 # Increment by two cause flag + value
-        elif token == '--task':
-            value = get_token_value(tokens, i, token)
-            if value is None:
-                return None
-            args['task'] = value
-            i += 2
-        elif token == '--instance-family':
-            value = get_token_value(tokens, i, token)
-            if value is None:
-                return None
-            args['instance_family'].append(value.lower()) # Append value after converting to lower so it can match any input (E.g. OnDeMaNd becomes ondemand)
-            i += 2
-        elif token == '--region':
-            value = get_token_value(tokens, i, token)
-            if value is None:
-                return None
-            args['region'] = value
-            i += 2
-        elif token == '--pricing-model':
-            value = get_token_value(tokens, i, token)
-            if value is None:
-                return None
-            args['pricing_model'] = value.lower()
-            i += 2
-        else:
+        if token not in FLAG_MAP:
             click.echo(f"  Unknown option: '{token}'")
             return None
+        
+        value = get_token_value(tokens, i, token)
+        if value is None:
+            return None
+        
+        key = FLAG_MAP[token]
+        if isinstance(args.get(key), list):
+            args[key].append(value.lower())
+        else:
+            args[key] = value.lower() if key in ['pricing_model'] else value
+        
+        i += 2
     
     return args
 
-def validate_analyze_args(args): # Checks args are actually valid (missing required fields, invalid region format, invalid pricing model)
-
-    errors = [] # Errors list
+def validate_args(args, required_fields):
+    errors = []
     
-    # Find errors and append them to list
-    if not args['project']:
-        errors.append("  Missing --project")
+    for field in required_fields:
+        if not args.get(field):
+            errors.append(f"  Missing --{field.replace('_', '-')}")
     
-    if not args['task']:
-        errors.append("  Missing --task")
-    
-    if not args['instance_family']:
-        errors.append("  Missing --instance-family")
-    
-    if args['pricing_model'] not in VALID_PRICING_MODELS:
+    if 'pricing_model' in args and args['pricing_model'] not in VALID_PRICING_MODELS:
         errors.append(f"  Invalid --pricing-model '{args['pricing_model']}'. Choose from: {', '.join(VALID_PRICING_MODELS)}")
     
-    if args['region'] and not re.match(VALID_REGION_FORMAT, args['region']):
+    if args.get('region') and not re.match(VALID_REGION_FORMAT, args['region']):
         errors.append(f"  Invalid --region format '{args['region']}'. Expected format: us-east-1")
     
     if errors:
         click.echo("\nErrors:")
         for e in errors:
-            click.echo(e) # Print all errors
+            click.echo(e)
         return False
     
     return True
@@ -103,6 +81,7 @@ def print_results(task_data, pricing_model, instance_prices): # Helper to print 
     click.echo(f"  Name:   {task_data['name']}")
     click.echo(f"  ID:     {task_data['id']}")
     click.echo(f"  Status: {task_data['status']}")
+    click.echo(f"  Runtime: {task_data['runtime_seconds'] // 60}:{str(task_data['runtime_seconds'] % 60).zfill(2)}m")
 
     click.echo(f"\n--- Hyperparameters ---")
     for k, v in task_data['hyperparameters'].items():
@@ -114,8 +93,7 @@ def print_results(task_data, pricing_model, instance_prices): # Helper to print 
 
     click.echo(f"\n--- Machine Metrics ---")
     for k, v in task_data['machine_metrics'].items():
-        clean_key = k.replace(':monitor:machine/', '').replace(':monitor:machine', '')
-        click.echo(f"  {clean_key}: {v}")
+        click.echo(f"  {k}: {v}")
 
     # AWS data
     click.echo(f"\n--- Available Instances ({pricing_model} pricing) ---")
@@ -123,13 +101,53 @@ def print_results(task_data, pricing_model, instance_prices): # Helper to print 
         if price:
             click.echo(f"  {instance['instance_type']} - ${price['price']}/hr | vCPUs: {instance['vcpus']} | Memory: {instance['memory_mb']}MB | GPU: {instance['gpu']}")
 
-def run_analyze(tokens):
-    args = parse_analyze_args(tokens)
+def print_report(task_data, instance_type, price):
+    runtime_seconds = task_data['runtime_seconds']
+    actual_cost = (runtime_seconds / 3600) * price['price']
 
-    if args is None: # Check args arent empty
+    click.echo(f"\n--- Experiment Summary ---")
+    click.echo(f"  Name:   {task_data['name']}")
+    click.echo(f"  ID:     {task_data['id']}")
+    click.echo(f"  Status: {task_data['status']}")
+    click.echo(f"  Runtime: {runtime_seconds // 60}:{str(runtime_seconds % 60).zfill(2)}m")
+
+    click.echo(f"\n--- Model Performance ---")
+    for k, v in task_data['model_metrics'].items():
+        if 'accuracy' in k:
+            click.echo(f"  {k}: {v:.4f} ({v * 100:.2f}%)")
+        else:
+            click.echo(f"  {k}: {v}")
+
+    click.echo(f"\n--- Cost Analysis ---")
+    click.echo(f"  Instance:             {instance_type}")
+    click.echo(f"  Price/hr:             ${price['price']}")
+    click.echo(f"  Actual cost:          ${actual_cost:.4f}")
+    for k, v in task_data['model_metrics'].items():
+        if 'accuracy' in k and v > 0:
+            click.echo(f"  Cost/accuracy point:  ${actual_cost / (v * 100):.4f}")
+
+ANALYZE_DEFAULTS = {
+    'project': None,
+    'task': None,
+    'instance_family': [],
+    'region': os.getenv('AWS_DEFAULT_REGION', None),
+    'pricing_model': 'ondemand'
+}
+
+REPORT_DEFAULTS = {
+    'project': None,
+    'task': None,
+    'instance_type': None,
+    'region': os.getenv('AWS_DEFAULT_REGION', None),
+}
+
+def run_analyze(tokens):
+    args = parse_args(tokens, ANALYZE_DEFAULTS)
+
+    if args is None: # Check none of the args is empty
         return
     
-    if not validate_analyze_args(args): # Check args aren't invalid
+    if not validate_args(args, ['project', 'task', 'instance_family']): # Check args aren't invalid
         return
     
     if args['pricing_model'] == 'spot': # Spot pricing not available yet
@@ -166,6 +184,34 @@ def run_analyze(tokens):
 
     print_results(task_data, args['pricing_model'], instance_prices)
 
+def run_report(tokens):
+    args = parse_args(tokens, REPORT_DEFAULTS)
+    if args is None:
+        return
+
+    if not validate_args(args, ['project', 'task', 'instance_type']):
+        return
+
+    click.echo(f"\nFetching ClearML experiment: {args['task']}...")
+    try:
+        task_data = get_task_data(args['project'], args['task'])
+    except Exception as e:
+        click.echo(f"  ClearML error: {e}")
+        return
+
+    click.echo(f"\nFetching price for {args['instance_type']}...")
+    try:
+        price = get_instance_price(args['instance_type'], region=args['region'])
+    except Exception as e:
+        click.echo(f"  AWS error: {e}")
+        return
+
+    if not price:
+        click.echo(f"  Could not fetch price for {args['instance_type']}")
+        return
+
+    print_report(task_data, args['instance_type'], price)
+
 def shell():
     click.echo("ML Cost-Performance Tool")
     click.echo("Type 'help' for available commands or 'quit' to exit\n")
@@ -184,6 +230,7 @@ def shell():
             if user_input.lower() == 'help':
                 click.echo("\nAvailable commands:")
                 click.echo("  analyze --project <name> --task <name> --instance-family <family> [--region <region>] [--pricing-model <ondemand|spot>]")
+                click.echo("  report --project <name> --task <name> --instance-type <type> [--region <region>]")
                 click.echo("  quit -- exit the tool\n")
                 continue
             
@@ -192,6 +239,8 @@ def shell():
             
             if command == 'analyze':
                 run_analyze(tokens[1:])
+            elif command == 'report':
+                run_report(tokens[1:])
             else:
                 click.echo(f"  Unknown command: '{command}'. Type 'help' for available commands.")
         

@@ -3,3 +3,4 @@ mlopsV/
 __pycache__/
 *.pyc
 .vscode/
+test.py

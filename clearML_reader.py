@@ -24,14 +24,15 @@ def get_task_data(project_name, task_name): # Gets clearML task info
     for metric, variants in metrics.items():
         for variant, values in variants.items():
             if ':monitor:machine' in metric:
-                machine_metrics[f"{metric}/{variant}"] = values['last']
+                machine_metrics[variant] = values['last']
             else:
                 model_metrics[f"{metric}/{variant}"] = values['last']
-    
+
     return {
         'id': task.id,
         'name': task.name,
         'status': task.status,
+        'runtime_seconds': task.data.active_duration, # In seconds
         'hyperparameters': task.get_parameters(),
         'model_metrics': model_metrics,
         'machine_metrics': machine_metrics
