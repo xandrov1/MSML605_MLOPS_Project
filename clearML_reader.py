@@ -23,7 +23,7 @@ def get_task_data(project_name, task_name): # Gets clearML task info
     model_metrics = {}
     for metric, variants in metrics.items():
         for variant, values in variants.items():
-            if ':monitor:machine' in metric:
+            if ':monitor:' in metric:
                 machine_metrics[variant] = values['last']
             else:
                 model_metrics[f"{metric}/{variant}"] = values['last']

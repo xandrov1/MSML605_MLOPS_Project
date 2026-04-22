@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 import os
 import re
 import copy
+from knowledge_base import insert_experiment
 
 load_dotenv()
 
@@ -74,21 +75,26 @@ def validate_args(args, required_fields):
     
     return True
 
-def print_results(task_data, pricing_model, instance_prices): # Helper to print all results fetched from API calls
-
-    # ClearML data
+def print_experiment_summary(task_data): # Used by both print results and print_report
     click.echo(f"\n--- Experiment Summary ---")
     click.echo(f"  Name:   {task_data['name']}")
     click.echo(f"  ID:     {task_data['id']}")
     click.echo(f"  Status: {task_data['status']}")
     click.echo(f"  Runtime: {task_data['runtime_seconds'] // 60}:{str(task_data['runtime_seconds'] % 60).zfill(2)}m")
 
-    click.echo(f"\n--- Hyperparameters ---")
-    for k, v in task_data['hyperparameters'].items():
-        click.echo(f"  {k}: {v}")
-
     click.echo(f"\n--- Model Performance ---")
     for k, v in task_data['model_metrics'].items():
+        if 'accuracy' in k:
+            click.echo(f"  {k}: {v:.4f} ({v * 100:.2f}%)")
+        else:
+            click.echo(f"  {k}: {v}")
+
+def print_results(task_data, pricing_model, instance_prices): # Print all results fetched from API calls, used by analyze command
+
+    print_experiment_summary(task_data)
+
+    click.echo(f"\n--- Hyperparameters ---")
+    for k, v in task_data['hyperparameters'].items():
         click.echo(f"  {k}: {v}")
 
     click.echo(f"\n--- Machine Metrics ---")
@@ -101,22 +107,11 @@ def print_results(task_data, pricing_model, instance_prices): # Helper to print 
         if price:
             click.echo(f"  {instance['instance_type']} - ${price['price']}/hr | vCPUs: {instance['vcpus']} | Memory: {instance['memory_mb']}MB | GPU: {instance['gpu']}")
 
-def print_report(task_data, instance_type, price):
+def print_report(task_data, instance_type, price): # Used by report command
     runtime_seconds = task_data['runtime_seconds']
     actual_cost = (runtime_seconds / 3600) * price['price']
 
-    click.echo(f"\n--- Experiment Summary ---")
-    click.echo(f"  Name:   {task_data['name']}")
-    click.echo(f"  ID:     {task_data['id']}")
-    click.echo(f"  Status: {task_data['status']}")
-    click.echo(f"  Runtime: {runtime_seconds // 60}:{str(runtime_seconds % 60).zfill(2)}m")
-
-    click.echo(f"\n--- Model Performance ---")
-    for k, v in task_data['model_metrics'].items():
-        if 'accuracy' in k:
-            click.echo(f"  {k}: {v:.4f} ({v * 100:.2f}%)")
-        else:
-            click.echo(f"  {k}: {v}")
+    print_experiment_summary(task_data)
 
     click.echo(f"\n--- Cost Analysis ---")
     click.echo(f"  Instance:             {instance_type}")
@@ -211,6 +206,47 @@ def run_report(tokens):
         return
 
     print_report(task_data, args['instance_type'], price)
+
+    save = input("\nSave this result to the knowledge base? (yes/no): ").strip().lower()
+    if save == 'yes':
+        model = input("  Model architecture: ").strip()
+        dataset = input("  Dataset: ").strip()
+        cloud = input("  Cloud provider (aws): ").strip().lower()
+        
+        cloud_map = { # Will change as more cloud computing platforms get supported
+            'aws': ('AWS', 'EC2'),
+        }
+        
+        if cloud not in cloud_map:
+            click.echo(f"  Unknown cloud provider '{cloud}'. Record not saved.")
+            return
+        
+        cloud_provider, compute_type = cloud_map[cloud]
+        
+        record = {
+            'model': model,
+            'dataset': dataset,
+            'clearml_task_id': task_data['id'],
+            'clearml_project': args['project'],
+            'hyperparameters': task_data['hyperparameters'],
+            'instance_type': args['instance_type'],
+            'region': args['region'] or 'us-east-1',
+            'price_per_hour': price['price'],
+            'runtime_seconds': task_data['runtime_seconds'],
+            'actual_cost': (task_data['runtime_seconds'] / 3600) * price['price'],
+            'test_accuracy': task_data['model_metrics'].get('test/accuracy'),
+            'train_loss': task_data['model_metrics'].get('train/loss'),
+            'test_loss': task_data['model_metrics'].get('test/loss'),
+            'cost_per_accuracy_point': (task_data['runtime_seconds'] / 3600) * price['price'] / (task_data['model_metrics'].get('test/accuracy', 1) * 100),
+            'cloud_provider': cloud_provider,
+            'compute_type': compute_type
+        }
+        
+        try:
+            insert_experiment(record)
+            click.echo("  Saved to knowledge base.")
+        except Exception as e:
+            click.echo(f"  Could not save to knowledge base: {e}")
 
 def shell():
     click.echo("ML Cost-Performance Tool")
