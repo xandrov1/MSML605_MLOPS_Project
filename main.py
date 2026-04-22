@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 import os
 import re
 import copy
-from knowledge_base import insert_experiment
+from knowledge_base import insert_experiment, search_experiments
 
 load_dotenv()
 
@@ -28,6 +28,29 @@ FLAG_MAP = {
     '--instance-type': 'instance_type',
     '--region': 'region',
     '--pricing-model': 'pricing_model',
+    '--model': 'model',
+    '--dataset': 'dataset',
+}
+
+ANALYZE_DEFAULTS = {
+    'project': None,
+    'task': None,
+    'instance_family': [],
+    'region': os.getenv('AWS_DEFAULT_REGION', None),
+    'pricing_model': 'ondemand'
+}
+
+REPORT_DEFAULTS = {
+    'project': None,
+    'task': None,
+    'instance_type': None,
+    'region': os.getenv('AWS_DEFAULT_REGION', None),
+}
+
+LOOKUP_DEFAULTS = {
+    'model': None,
+    'dataset': None,
+    'instance_type': None,
 }
 
 def parse_args(tokens, defaults):
@@ -120,21 +143,6 @@ def print_report(task_data, instance_type, price): # Used by report command
     for k, v in task_data['model_metrics'].items():
         if 'accuracy' in k and v > 0:
             click.echo(f"  Cost/accuracy point:  ${actual_cost / (v * 100):.4f}")
-
-ANALYZE_DEFAULTS = {
-    'project': None,
-    'task': None,
-    'instance_family': [],
-    'region': os.getenv('AWS_DEFAULT_REGION', None),
-    'pricing_model': 'ondemand'
-}
-
-REPORT_DEFAULTS = {
-    'project': None,
-    'task': None,
-    'instance_type': None,
-    'region': os.getenv('AWS_DEFAULT_REGION', None),
-}
 
 def run_analyze(tokens):
     args = parse_args(tokens, ANALYZE_DEFAULTS)
@@ -248,6 +256,68 @@ def run_report(tokens):
         except Exception as e:
             click.echo(f"  Could not save to knowledge base: {e}")
 
+def run_lookup(tokens):
+    args = parse_args(tokens, LOOKUP_DEFAULTS)
+    if args is None:
+        return
+
+    if not validate_args(args, ['model', 'dataset']):
+        return
+
+    click.echo(f"\nSearching knowledge base...")
+    try:
+        results = search_experiments(
+            model=args['model'],
+            dataset=args['dataset'],
+            instance_type=args.get('instance_type')
+        )
+    except Exception as e:
+        click.echo(f"  Knowledge base error: {e}")
+        return
+
+    if not results:
+        click.echo(f"  No results found for {args['model']} on {args['dataset']}.")
+        return
+
+    click.echo(f"\n--- Knowledge Base Results ---")
+    for i, r in enumerate(results, 1):
+        accuracy = f"{r['test_accuracy'] * 100:.2f}%" if r['test_accuracy'] else 'N/A'
+        cost_per_point = f"${r['cost_per_accuracy_point']:.4f}/accuracy point" if r['cost_per_accuracy_point'] else 'N/A'
+        click.echo(f"  {i}. {r['model']} | {r['dataset']} | {r['instance_type']} | ${r['actual_cost']:.4f} | {accuracy} | {cost_per_point}")
+
+    try:
+        selection = int(input(f"\nSelect a result (1-{len(results)}) or 0 to cancel: ").strip())
+    except ValueError:
+        click.echo("  Invalid selection.")
+        return
+
+    if selection == 0:
+        return
+
+    if selection < 1 or selection > len(results):
+        click.echo("  Invalid selection.")
+        return
+
+    selected = results[selection - 1]
+    click.echo(f"\n--- Selected Experiment ---")
+    click.echo(f"  Model:          {selected['model']}")
+    click.echo(f"  Dataset:        {selected['dataset']}")
+    click.echo(f"  Instance:       {selected['instance_type']} ({selected['cloud_provider']} {selected['compute_type']})")
+    click.echo(f"  Region:         {selected['region']}")
+    click.echo(f"  Runtime:        {selected['runtime_seconds'] // 60}:{str(selected['runtime_seconds'] % 60).zfill(2)}m")
+    click.echo(f"  Price/hr:       ${selected['price_per_hour']}")
+    click.echo(f"  Actual cost:    ${selected['actual_cost']:.4f}")
+    click.echo(f"\n--- Model Performance ---")
+    click.echo(f"  Test accuracy:  {selected['test_accuracy'] * 100:.2f}%" if selected['test_accuracy'] else "  Test accuracy:  N/A")
+    click.echo(f"  Train loss:     {selected['train_loss']}" if selected['train_loss'] else "  Train loss:     N/A")
+    click.echo(f"  Test loss:      {selected['test_loss']}" if selected['test_loss'] else "  Test loss:      N/A")
+    click.echo(f"  Cost/acc point: ${selected['cost_per_accuracy_point']:.4f}" if selected['cost_per_accuracy_point'] else "  Cost/acc point: N/A")
+    click.echo(f"\n--- Hyperparameters ---")
+    for k, v in selected['hyperparameters'].items():
+        click.echo(f"  {k}: {v}")
+    click.echo(f"\n  ClearML Task ID: {selected['clearml_task_id']}")
+    click.echo(f"  Recorded at:     {selected['created_at']}")
+
 def shell():
     click.echo("ML Cost-Performance Tool")
     click.echo("Type 'help' for available commands or 'quit' to exit\n")
@@ -267,6 +337,7 @@ def shell():
                 click.echo("\nAvailable commands:")
                 click.echo("  analyze --project <name> --task <name> --instance-family <family> [--region <region>] [--pricing-model <ondemand|spot>]")
                 click.echo("  report --project <name> --task <name> --instance-type <type> [--region <region>]")
+                click.echo("  lookup --model <name> --dataset <name> [--instance-type <type>]")
                 click.echo("  quit -- exit the tool\n")
                 continue
             
@@ -277,6 +348,8 @@ def shell():
                 run_analyze(tokens[1:])
             elif command == 'report':
                 run_report(tokens[1:])
+            elif command == 'lookup':
+                run_lookup(tokens[1:])
             else:
                 click.echo(f"  Unknown command: '{command}'. Type 'help' for available commands.")
         
