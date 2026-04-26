@@ -81,3 +81,17 @@ def get_instance_price(
                 if float(usd) > 0:
                     return {'price': float(usd), 'timestamp': None}
     return None
+
+def get_gpu_type(instance_type, region=None): # For GPU info. (only used by report command for records purposes)
+    ec2 = boto3.client('ec2', region_name=region or os.getenv('AWS_DEFAULT_REGION'))
+    response = ec2.describe_instance_types(InstanceTypes=[instance_type])
+    if not response['InstanceTypes']:
+        return None
+    gpus = response['InstanceTypes'][0].get('GpuInfo', {}).get('Gpus', [])
+    if not gpus:
+        return None
+    return {
+        'name': gpus[0]['Name'],
+        'manufacturer': gpus[0]['Manufacturer'],
+        'count': gpus[0]['Count']
+    }

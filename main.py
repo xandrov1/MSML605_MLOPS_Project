@@ -2,7 +2,7 @@
 import click
 import shlex
 from clearml_reader import get_task_data
-from aws_pricing import get_ec2_instances, get_instance_price
+from aws_pricing import get_instance_price, get_gpu_type
 from dotenv import load_dotenv
 import os
 import re
@@ -11,7 +11,6 @@ from knowledge_base import insert_experiment, search_experiments
 
 load_dotenv()
 
-VALID_PRICING_MODELS = ['ondemand', 'spot']
 VALID_REGION_FORMAT = r'^[a-z]+-[a-z]+-[0-9]+$'
 
 
@@ -24,20 +23,10 @@ def get_token_value(tokens, i, flag): # Helper for input sanitisation, bounds ch
 FLAG_MAP = {
     '--project': 'project',
     '--task': 'task',
-    '--instance-family': 'instance_family',
     '--instance-type': 'instance_type',
     '--region': 'region',
-    '--pricing-model': 'pricing_model',
     '--model': 'model',
     '--dataset': 'dataset',
-}
-
-ANALYZE_DEFAULTS = {
-    'project': None,
-    'task': None,
-    'instance_family': [],
-    'region': os.getenv('AWS_DEFAULT_REGION', None),
-    'pricing_model': 'ondemand'
 }
 
 REPORT_DEFAULTS = {
@@ -112,7 +101,9 @@ def print_experiment_summary(task_data): # Used by both print results and print_
         else:
             click.echo(f"  {k}: {v}")
 
-def print_results(task_data, pricing_model, instance_prices): # Print all results fetched from API calls, used by analyze command
+def print_report(task_data, instance_type, price, gpu_type=None): # Used by report command
+    runtime_seconds = task_data['runtime_seconds']
+    actual_cost = (runtime_seconds / 3600) * price['price']
 
     print_experiment_summary(task_data)
 
@@ -120,72 +111,16 @@ def print_results(task_data, pricing_model, instance_prices): # Print all result
     for k, v in task_data['hyperparameters'].items():
         click.echo(f"  {k}: {v}")
 
-    click.echo(f"\n--- Machine Metrics ---")
-    for k, v in task_data['machine_metrics'].items():
-        click.echo(f"  {k}: {v}")
-
-    # AWS data
-    click.echo(f"\n--- Available Instances ({pricing_model} pricing) ---")
-    for instance, price in instance_prices:
-        if price:
-            click.echo(f"  {instance['instance_type']} - ${price['price']}/hr | vCPUs: {instance['vcpus']} | Memory: {instance['memory_mb']}MB | GPU: {instance['gpu']}")
-
-def print_report(task_data, instance_type, price): # Used by report command
-    runtime_seconds = task_data['runtime_seconds']
-    actual_cost = (runtime_seconds / 3600) * price['price']
-
-    print_experiment_summary(task_data)
-
     click.echo(f"\n--- Cost Analysis ---")
     click.echo(f"  Instance:             {instance_type}")
+    if gpu_type:
+        click.echo(f"  GPU:                  {gpu_type['manufacturer']} {gpu_type['name']} x{gpu_type['count']}")
     click.echo(f"  Price/hr:             ${price['price']}")
     click.echo(f"  Actual cost:          ${actual_cost:.4f}")
+
     for k, v in task_data['model_metrics'].items():
         if 'accuracy' in k and v > 0:
             click.echo(f"  Cost/accuracy point:  ${actual_cost / (v * 100):.4f}")
-
-def run_analyze(tokens):
-    args = parse_args(tokens, ANALYZE_DEFAULTS)
-
-    if args is None: # Check none of the args is empty
-        return
-    
-    if not validate_args(args, ['project', 'task', 'instance_family']): # Check args aren't invalid
-        return
-    
-    if args['pricing_model'] == 'spot': # Spot pricing not available yet
-        click.echo("\n  [!] Spot pricing is not yet available. Please re-run with --pricing-model ondemand.")
-        return
-    
-    # Getting ClearML data 
-    click.echo(f"\nFetching ClearML experiment: {args['task']}...")
-    try:
-        task_data = get_task_data(args['project'], args['task']) # ClearML API call; from clearml_reader
-    except Exception as e:
-        click.echo(f"  ClearML error: {e}")
-        return
-
-    # Getting AWS data
-    click.echo(f"\nFetching AWS instances...")
-    try:
-        instances = get_ec2_instances(instance_families=args['instance_family'], region=args['region']) # AWS API call from aws_pricing
-    except Exception as e:
-        click.echo(f"  AWS error: {e}")
-        return
-    
-    if not instances: # Instance family not found error
-        click.echo(f"  No instances found for families: {args['instance_family']}")
-        return
-
-    instance_prices = [] # Instance prices
-    for instance in instances:
-        try:
-            price = get_instance_price(instance['instance_type'], region=args['region'], pricing_model=args['pricing_model']) # AWS API call from aws_pricing (uses different API than earlier one)
-            instance_prices.append((instance, price))
-        except Exception as e:
-            click.echo(f"  Could not fetch price for {instance['instance_type']}: {e}")
-
-    print_results(task_data, args['pricing_model'], instance_prices)
 
 def run_report(tokens):
     args = parse_args(tokens, REPORT_DEFAULTS)
@@ -197,14 +132,14 @@ def run_report(tokens):
 
     click.echo(f"\nFetching ClearML experiment: {args['task']}...")
     try:
-        task_data = get_task_data(args['project'], args['task'])
+        task_data = get_task_data(args['project'], args['task']) # Experiment info (clearml API call)
     except Exception as e:
         click.echo(f"  ClearML error: {e}")
         return
 
     click.echo(f"\nFetching price for {args['instance_type']}...")
     try:
-        price = get_instance_price(args['instance_type'], region=args['region'])
+        price = get_instance_price(args['instance_type'], region=args['region']) # Pricing info (aws pricing API call)
     except Exception as e:
         click.echo(f"  AWS error: {e}")
         return
@@ -212,8 +147,10 @@ def run_report(tokens):
     if not price:
         click.echo(f"  Could not fetch price for {args['instance_type']}")
         return
+    
+    gpu_type = get_gpu_type(args['instance_type'], region=args['region']) # GPU info retrieval (ec2 API call)
 
-    print_report(task_data, args['instance_type'], price)
+    print_report(task_data, args['instance_type'], price, gpu_type)
 
     save = input("\nSave this result to the knowledge base? (yes/no): ").strip().lower()
     if save == 'yes':
@@ -247,7 +184,8 @@ def run_report(tokens):
             'test_loss': task_data['model_metrics'].get('test/loss'),
             'cost_per_accuracy_point': (task_data['runtime_seconds'] / 3600) * price['price'] / (task_data['model_metrics'].get('test/accuracy', 1) * 100),
             'cloud_provider': cloud_provider,
-            'compute_type': compute_type
+            'compute_type': compute_type,
+            'gpu_type': gpu_type
         }
         
         try:
@@ -283,7 +221,7 @@ def run_lookup(tokens):
     for i, r in enumerate(results, 1):
         accuracy = f"{r['test_accuracy'] * 100:.2f}%" if r['test_accuracy'] else 'N/A'
         cost_per_point = f"${r['cost_per_accuracy_point']:.4f}/accuracy point" if r['cost_per_accuracy_point'] else 'N/A'
-        click.echo(f"  {i}. {r['model']} | {r['dataset']} | {r['instance_type']} | ${r['actual_cost']:.4f} | {accuracy} | {cost_per_point}")
+        click.echo(f"  {i}. {r['model']} | {r['dataset']} | {r['instance_type']} | {r['runtime_seconds'] // 60}:{str(r['runtime_seconds'] % 60).zfill(2)}m | ${r['actual_cost']:.4f} | {accuracy} | {cost_per_point}")
 
     try:
         selection = int(input(f"\nSelect a result (1-{len(results)}) or 0 to cancel: ").strip())
@@ -335,7 +273,6 @@ def shell():
             
             if user_input.lower() == 'help':
                 click.echo("\nAvailable commands:")
-                click.echo("  analyze --project <name> --task <name> --instance-family <family> [--region <region>] [--pricing-model <ondemand|spot>]")
                 click.echo("  report --project <name> --task <name> --instance-type <type> [--region <region>]")
                 click.echo("  lookup --model <name> --dataset <name> [--instance-type <type>]")
                 click.echo("  quit -- exit the tool\n")
@@ -344,9 +281,7 @@ def shell():
             tokens = shlex.split(user_input)
             command = tokens[0]
             
-            if command == 'analyze':
-                run_analyze(tokens[1:])
-            elif command == 'report':
+            if command == 'report':
                 run_report(tokens[1:])
             elif command == 'lookup':
                 run_lookup(tokens[1:])
