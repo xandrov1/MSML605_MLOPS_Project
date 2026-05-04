@@ -60,7 +60,7 @@ def parse_args(tokens, defaults):
         if isinstance(args.get(key), list):
             args[key].append(value.lower())
         else:
-            args[key] = value.lower() if key in ['pricing_model'] else value
+            args[key] = value
         
         i += 2
     
@@ -72,9 +72,6 @@ def validate_args(args, required_fields):
     for field in required_fields:
         if not args.get(field):
             errors.append(f"  Missing --{field.replace('_', '-')}")
-    
-    if 'pricing_model' in args and args['pricing_model'] not in VALID_PRICING_MODELS:
-        errors.append(f"  Invalid --pricing-model '{args['pricing_model']}'. Choose from: {', '.join(VALID_PRICING_MODELS)}")
     
     if args.get('region') and not re.match(VALID_REGION_FORMAT, args['region']):
         errors.append(f"  Invalid --region format '{args['region']}'. Expected format: us-east-1")
